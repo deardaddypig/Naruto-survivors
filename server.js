@@ -1,5 +1,7 @@
 const express = require('express');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
@@ -7,7 +9,7 @@ const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-    res.send('Naruto Survivors 3-Player Co-op Server (7 Shinobi Edition) is Running!');
+    res.send('Naruto Survivors 3-Player Co-op Server (Smooth 60Hz + Global Leaderboard) is Running!');
 });
 
 const server = http.createServer(app);
@@ -20,6 +22,55 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 const rooms = new Map();
+
+/**
+ * ============================================================================
+ * 全服排行榜持久化儲存 (Global Leaderboard)
+ * ============================================================================
+ */
+const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+let globalLeaderboard = [];
+
+function loadLeaderboard() {
+    try {
+        if (fs.existsSync(LEADERBOARD_FILE)) {
+            const raw = fs.readFileSync(LEADERBOARD_FILE, 'utf8');
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) globalLeaderboard = parsed;
+        }
+    } catch (err) {
+        console.error('Failed to load leaderboard:', err.message);
+    }
+}
+
+function saveLeaderboard() {
+    try {
+        fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(globalLeaderboard, null, 2), 'utf8');
+    } catch (err) {
+        console.error('Failed to save leaderboard:', err.message);
+    }
+}
+
+function recordGlobalScore(entry) {
+    const cleanEntry = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: String(entry.name || '木葉忍者').slice(0, 24),
+        charId: String(entry.charId || 'naruto'),
+        modeLabel: String(entry.modeLabel || '單機挑戰'),
+        time: Math.max(0, Math.floor(Number(entry.time) || 0)),
+        level: Math.max(1, Math.floor(Number(entry.level) || 1)),
+        kills: Math.max(0, Math.floor(Number(entry.kills) || 0)),
+        createdAt: Date.now()
+    };
+
+    globalLeaderboard.push(cleanEntry);
+    globalLeaderboard.sort((a, b) => (b.time - a.time) || (b.kills - a.kills));
+    globalLeaderboard = globalLeaderboard.slice(0, 10);
+    saveLeaderboard();
+    return cleanEntry.id;
+}
+
+loadLeaderboard();
 
 const CHAR_CONFIG = {
     naruto: {
@@ -193,6 +244,8 @@ function createPlayerState(id, name, slotIndex, charId = 'naruto') {
         y: pos.y,
         dx: 0,
         dy: 0,
+        vx: 0,
+        vy: 0,
         radius: 20,
         facing: 'right',
         hp: cfg.maxHp,
@@ -245,6 +298,7 @@ function broadcastLobby(room) {
 
 function startRoomGame(room) {
     room.state = 'PLAYING';
+    room.pausedBy = '';
     room.gameTime = 0;
     room.teamLevel = 1;
     room.teamXp = 0;
@@ -429,8 +483,8 @@ function damageEnemy(room, enemy, amount, attacker, color = '#fde047', knockback
     if (attacker && knockbackForce > 0) {
         const angle = Math.atan2(enemy.y - attacker.y, enemy.x - attacker.x);
         const kb = enemy.type === 'elite' ? 0.3 : 1.0;
-        enemy.vx = Math.cos(angle) * knockbackForce * kb;
-        enemy.vy = Math.sin(angle) * knockbackForce * kb;
+        enemy.kbVx = Math.cos(angle) * knockbackForce * kb;
+        enemy.kbVy = Math.sin(angle) * knockbackForce * kb;
     }
 
     if (enemy.hp <= 0) {
@@ -469,11 +523,24 @@ function stepRoom(room, dt) {
             }))
             .sort((a, b) => b.kills - a.kills);
 
+        const mvp = rankedPlayers[0];
+        const teamNames = rankedPlayers.map(p => p.name).join('、');
+        const newEntryId = recordGlobalScore({
+            name: rankedPlayers.length > 1 ? `${mvp.name}小隊 (${teamNames})` : mvp.name,
+            charId: mvp.charId,
+            modeLabel: rankedPlayers.length > 1 ? `${rankedPlayers.length}人合作` : '線上單人',
+            time: room.gameTime,
+            level: room.teamLevel,
+            kills: room.totalKills
+        });
+
         io.to(room.code).emit('gameOver', {
             time: room.gameTime,
             level: room.teamLevel,
             totalKills: room.totalKills,
-            players: rankedPlayers
+            players: rankedPlayers,
+            globalLeaderboard,
+            newEntryId
         });
         return;
     }
@@ -482,6 +549,8 @@ function stepRoom(room, dt) {
         if (p.hitTimer > 0) p.hitTimer = Math.max(0, p.hitTimer - dt);
 
         if (p.downed) {
+            p.vx = 0;
+            p.vy = 0;
             let rescuerNearby = false;
             for (const ally of alivePlayers) {
                 if (Math.hypot(ally.x - p.x, ally.y - p.y) <= 68) {
@@ -511,10 +580,15 @@ function stepRoom(room, dt) {
         if (p.dx !== 0 || p.dy !== 0) {
             const len = Math.hypot(p.dx, p.dy);
             const scale = len > 1 ? 1 / len : 1;
-            p.x += p.dx * scale * p.speed * dt;
-            p.y += p.dy * scale * p.speed * dt;
+            p.vx = p.dx * scale * p.speed;
+            p.vy = p.dy * scale * p.speed;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
             if (p.dx < -0.05) p.facing = 'left';
             if (p.dx > 0.05) p.facing = 'right';
+        } else {
+            p.vx = 0;
+            p.vy = 0;
         }
 
         p.weapon.timer -= dt;
@@ -528,7 +602,7 @@ function stepRoom(room, dt) {
                     nearest = e;
                 }
             }
-            if (nearest && minDist < 760) {
+            if (nearest && minDist < 850) {
                 const baseAngle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
                 p.facing = Math.cos(baseAngle) >= 0 ? 'right' : 'left';
                 const cnt = p.weapon.count;
@@ -568,7 +642,7 @@ function stepRoom(room, dt) {
                         const d = Math.hypot(e.x - cx, e.y - cy);
                         if (d < minD) { minD = d; nearest = e; }
                     }
-                    if (nearest && minD < 700) {
+                    if (nearest && minD < 750) {
                         const ang = Math.atan2(nearest.y - cy, nearest.x - cx);
                         room.projectiles.push({
                             id: room.nextEntityId++,
@@ -627,7 +701,7 @@ function stepRoom(room, dt) {
             if (p.skills.lightning.timer <= 0) {
                 p.skills.lightning.timer = p.skills.lightning.cooldown;
                 const candidates = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 420)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 460)
                     .sort(() => 0.5 - Math.random())
                     .slice(0, p.skills.lightning.bolts);
 
@@ -656,7 +730,7 @@ function stepRoom(room, dt) {
                     const d = Math.hypot(e.x - p.x, e.y - p.y);
                     if (d < minD) { minD = d; nearest = e; }
                 }
-                if (nearest && minD < 680) {
+                if (nearest && minD < 750) {
                     const ang = Math.atan2(nearest.y - p.y, nearest.x - p.x);
                     room.projectiles.push({
                         id: room.nextEntityId++,
@@ -682,7 +756,7 @@ function stepRoom(room, dt) {
             if (p.skills.amaterasu.timer <= 0) {
                 p.skills.amaterasu.timer = p.skills.amaterasu.cooldown;
                 const targets = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 430)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 460)
                     .sort(() => 0.5 - Math.random())
                     .slice(0, p.skills.amaterasu.count);
 
@@ -759,7 +833,7 @@ function stepRoom(room, dt) {
             if (p.skills.shadowStitch.timer <= 0) {
                 p.skills.shadowStitch.timer = p.skills.shadowStitch.cooldown;
                 const targets = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 380)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 420)
                     .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))
                     .slice(0, p.skills.shadowStitch.spikes);
 
@@ -786,7 +860,7 @@ function stepRoom(room, dt) {
             if (p.skills.hiraishin.timer <= 0) {
                 p.skills.hiraishin.timer = p.skills.hiraishin.cooldown;
                 const targets = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 460)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 490)
                     .sort(() => 0.5 - Math.random())
                     .slice(0, p.skills.hiraishin.strikes);
 
@@ -810,6 +884,7 @@ function stepRoom(room, dt) {
         }
     }
 
+    // 生成敵人（距離拉遠至 840~980，支援遠距離視角切換不穿幫）
     room.spawnTimer -= dt;
     if (room.spawnTimer <= 0 && room.enemies.length < 150) {
         const playerScale = 1 + (players.length - 1) * 0.55;
@@ -820,7 +895,7 @@ function stepRoom(room, dt) {
         for (let i = 0; i < spawnCount; i++) {
             const anchor = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
             const angle = Math.random() * Math.PI * 2;
-            const dist = 620 + Math.random() * 120;
+            const dist = 840 + Math.random() * 140;
             const rand = Math.random();
             let type = 'basic';
             if (room.gameTime > 18 && rand < 0.28) type = 'fast';
@@ -839,6 +914,8 @@ function stepRoom(room, dt) {
                 y: anchor.y + Math.sin(angle) * dist,
                 vx: 0,
                 vy: 0,
+                kbVx: 0,
+                kbVy: 0,
                 facing: 'left',
                 hp: stats.hp,
                 maxHp: stats.hp,
@@ -907,13 +984,15 @@ function stepRoom(room, dt) {
         }
 
         const spd = e.slowTimer > 0 ? e.speed * (e.slowFactor || 0.48) : e.speed;
-        e.vx *= 0.88;
-        e.vy *= 0.88;
+        e.kbVx *= Math.pow(0.88, dt * 30);
+        e.kbVy *= Math.pow(0.88, dt * 30);
 
         const angle = Math.atan2(target.y - e.y, target.x - e.x);
         e.facing = Math.cos(angle) >= 0 ? 'right' : 'left';
-        e.x += (Math.cos(angle) * spd + e.vx) * dt;
-        e.y += (Math.sin(angle) * spd + e.vy) * dt;
+        e.vx = Math.cos(angle) * spd + e.kbVx;
+        e.vy = Math.sin(angle) * spd + e.kbVy;
+        e.x += e.vx * dt;
+        e.y += e.vy * dt;
 
         for (const p of alivePlayers) {
             if (p.hitTimer > 0 || p.downed) continue;
@@ -963,14 +1042,19 @@ function stepRoom(room, dt) {
     }
 }
 
+// 60Hz 高精度物理模擬，30Hz 附帶即時速度向量快照廣播
+let tickCounter = 0;
 setInterval(() => {
-    const dt = 1 / 30;
+    const dt = 1 / 60;
+    tickCounter++;
+    const shouldBroadcast = (tickCounter % 2 === 0);
+
     for (const room of rooms.values()) {
         stepRoom(room, dt);
 
-        if (room.state === 'PLAYING' || room.state === 'LEVELUP') {
+        if (shouldBroadcast && (room.state === 'PLAYING' || room.state === 'LEVELUP')) {
             io.volatile.to(room.code).emit('state', {
-                t: room.gameTime,
+                t: Number(room.gameTime.toFixed(2)),
                 lv: room.teamLevel,
                 xp: room.teamXp,
                 xpNext: room.teamXpNext,
@@ -979,8 +1063,10 @@ setInterval(() => {
                     id: p.id,
                     name: p.name,
                     charId: p.charId,
-                    x: Math.round(p.x),
-                    y: Math.round(p.y),
+                    x: Math.round(p.x * 10) / 10,
+                    y: Math.round(p.y * 10) / 10,
+                    vx: Math.round(p.vx),
+                    vy: Math.round(p.vy),
                     spd: Math.round(p.speed),
                     facing: p.facing,
                     moving: p.dx !== 0 || p.dy !== 0,
@@ -1011,8 +1097,10 @@ setInterval(() => {
                 enemies: room.enemies.map(e => ({
                     id: e.id,
                     type: e.type,
-                    x: Math.round(e.x),
-                    y: Math.round(e.y),
+                    x: Math.round(e.x * 10) / 10,
+                    y: Math.round(e.y * 10) / 10,
+                    vx: Math.round(e.vx),
+                    vy: Math.round(e.vy),
                     facing: e.facing,
                     hp: e.hp,
                     maxHp: e.maxHp,
@@ -1022,8 +1110,8 @@ setInterval(() => {
                 projectiles: room.projectiles.map(pr => ({
                     id: pr.id,
                     kind: pr.kind,
-                    x: Math.round(pr.x),
-                    y: Math.round(pr.y),
+                    x: Math.round(pr.x * 10) / 10,
+                    y: Math.round(pr.y * 10) / 10,
                     vx: Math.round(pr.vx),
                     vy: Math.round(pr.vy),
                     angle: Number(pr.angle.toFixed(2))
@@ -1037,10 +1125,13 @@ setInterval(() => {
             });
         }
     }
-}, 1000 / 30);
+}, 1000 / 60);
 
 io.on('connection', (socket) => {
     let currentRoomCode = null;
+
+    // 連線即主動推送最新全服英雄榜
+    socket.emit('leaderboardData', globalLeaderboard);
 
     function removePlayerFromRoom() {
         if (!currentRoomCode) return;
@@ -1070,6 +1161,21 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb();
     });
 
+    socket.on('getLeaderboard', () => {
+        socket.emit('leaderboardData', globalLeaderboard);
+    });
+
+    socket.on('submitSoloScore', (entry) => {
+        const newEntryId = recordGlobalScore({
+            ...entry,
+            modeLabel: '單機挑戰'
+        });
+        socket.emit('soloLeaderboardUpdated', {
+            globalLeaderboard,
+            newEntryId
+        });
+    });
+
     socket.on('createRoom', ({ name, charId }) => {
         removePlayerFromRoom();
         const code = generateRoomCode();
@@ -1077,6 +1183,7 @@ io.on('connection', (socket) => {
             code,
             hostId: socket.id,
             state: 'LOBBY',
+            pausedBy: '',
             players: new Map(),
             enemies: [],
             projectiles: [],
@@ -1141,6 +1248,30 @@ io.on('connection', (socket) => {
         const room = rooms.get(currentRoomCode);
         if (!room || room.hostId !== socket.id) return;
         startRoomGame(room);
+    });
+
+    socket.on('togglePause', () => {
+        if (!currentRoomCode) return;
+        const room = rooms.get(currentRoomCode);
+        if (!room) return;
+        const p = room.players.get(socket.id);
+        if (!p) return;
+
+        if (room.state === 'PLAYING') {
+            room.state = 'PAUSED';
+            room.pausedBy = p.name;
+            for (const member of room.players.values()) {
+                member.dx = 0;
+                member.dy = 0;
+                member.vx = 0;
+                member.vy = 0;
+            }
+            io.to(room.code).emit('gamePaused', { by: p.name });
+        } else if (room.state === 'PAUSED') {
+            room.state = 'PLAYING';
+            room.pausedBy = '';
+            io.to(room.code).emit('resumeGame');
+        }
     });
 
     socket.on('input', ({ dx, dy }) => {
