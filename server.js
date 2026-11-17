@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-    res.send('Naruto Survivors 3-Player Co-op Server (Smooth 60Hz + Global Leaderboard) is Running!');
+    res.send('Naruto Survivors 3-Player Co-op Server (9 Shinobi & 4 Bosses Edition) is Running!');
 });
 
 const server = http.createServer(app);
@@ -25,16 +25,16 @@ const rooms = new Map();
 
 /**
  * ============================================================================
- * 全服排行榜持久化儲存 (Global Leaderboard)
+ * 全服所有玩家排行榜持久化儲存 (Global Leaderboard)
  * ============================================================================
  */
-const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+const LB_FILE = path.join(__dirname, 'leaderboard.json');
 let globalLeaderboard = [];
 
 function loadLeaderboard() {
     try {
-        if (fs.existsSync(LEADERBOARD_FILE)) {
-            const raw = fs.readFileSync(LEADERBOARD_FILE, 'utf8');
+        if (fs.existsSync(LB_FILE)) {
+            const raw = fs.readFileSync(LB_FILE, 'utf8');
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) globalLeaderboard = parsed;
         }
@@ -45,29 +45,18 @@ function loadLeaderboard() {
 
 function saveLeaderboard() {
     try {
-        fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(globalLeaderboard, null, 2), 'utf8');
+        fs.writeFileSync(LB_FILE, JSON.stringify(globalLeaderboard, null, 2), 'utf8');
     } catch (err) {
         console.error('Failed to save leaderboard:', err.message);
     }
 }
 
 function recordGlobalScore(entry) {
-    const cleanEntry = {
-        id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        name: String(entry.name || '木葉忍者').slice(0, 24),
-        charId: String(entry.charId || 'naruto'),
-        modeLabel: String(entry.modeLabel || '單機挑戰'),
-        time: Math.max(0, Math.floor(Number(entry.time) || 0)),
-        level: Math.max(1, Math.floor(Number(entry.level) || 1)),
-        kills: Math.max(0, Math.floor(Number(entry.kills) || 0)),
-        createdAt: Date.now()
-    };
-
-    globalLeaderboard.push(cleanEntry);
+    globalLeaderboard.push(entry);
     globalLeaderboard.sort((a, b) => (b.time - a.time) || (b.kills - a.kills));
     globalLeaderboard = globalLeaderboard.slice(0, 10);
     saveLeaderboard();
-    return cleanEntry.id;
+    return globalLeaderboard;
 }
 
 loadLeaderboard();
@@ -142,6 +131,26 @@ const CHAR_CONFIG = {
         cooldown: 0.82,
         damage: 25,
         count: 2
+    },
+    tobirama: {
+        name: '千手扉間',
+        maxHp: 145,
+        speed: 255,
+        regen: 1.0,
+        weapon: 'water_sever',
+        cooldown: 0.85,
+        damage: 34,
+        count: 1
+    },
+    hashirama: {
+        name: '千手柱間',
+        maxHp: 200,
+        speed: 245,
+        regen: 3.5,
+        weapon: 'wood_dragon',
+        cooldown: 0.90,
+        damage: 42,
+        count: 1
     }
 };
 
@@ -215,8 +224,35 @@ const UPGRADE_POOL = {
         { id: 'hp', title: '四代目火影護佑', desc: '最大生命 +30 並回復 65 HP' },
         { id: 'speed', title: '時空間神速', desc: '移動速度再提升 15%' },
         { id: 'magnet', title: '飛雷神印記回收', desc: '寶石拾取範圍擴大 60%' }
+    ],
+    tobirama: [
+        { id: 'w_count', title: '多重水斷波', desc: '超高壓水刃每次額外發射 +1 道（貫穿敵陣）' },
+        { id: 'w_dmg', title: '水遁・極限水壓', desc: '水斷波基礎傷害提升 +18' },
+        { id: 'w_cd', title: '水遁單手結印', desc: '主武器冷卻縮短 22%' },
+        { id: 'water_dragon', title: '水遁・水龍彈之術', desc: '解鎖/強化咆哮水龍，衝擊敵群造成範圍水爆與擊退' },
+        { id: 'hiraishin', title: '飛雷神斬・瞬殺', desc: '解鎖/強化時空間水雷斬擊，連續瞬殺多名敵人' },
+        { id: 'hp', title: '千手一族體魄', desc: '最大生命 +35 並回復 75 HP' },
+        { id: 'speed', title: '水瞬身之術', desc: '移動速度永久提升 15%' },
+        { id: 'magnet', title: '頂級感知能力', desc: '寶石拾取範圍擴大 60%' }
+    ],
+    hashirama: [
+        { id: 'w_count', title: '雙木龍咆哮', desc: '木龍之術每次額外召喚 +1 條巨木龍貫穿敵軍' },
+        { id: 'w_dmg', title: '仙法・木遁查克拉', desc: '木龍之術基礎傷害提升 +22' },
+        { id: 'w_cd', title: '忍者之神結印', desc: '主武器冷卻縮短 24%' },
+        { id: 'deep_forest', title: '木遁・樹界降誕', desc: '解鎖/擴大周身巨樹藤蔓領域，強力纏繞減速並持續碾壓敵人' },
+        { id: 'shinsu_senju', title: '仙法・木遁・真數千手', desc: '解鎖/強化漫天千手佛拳，對範圍內敵群發動毀滅性連打' },
+        { id: 'hp', title: '柱間細胞超回復', desc: '最大生命 +50、回血速度提升並立即回復 100 HP' },
+        { id: 'speed', title: '仙人步法', desc: '移動速度永久提升 15%' },
+        { id: 'magnet', title: '自然能量共鳴', desc: '寶石拾取範圍擴大 65%' }
     ]
 };
+
+const BOSS_SCHEDULE = [
+    { time: 300, type: 'gaara', name: '砂瀑我愛羅', radius: 28, speed: 66, baseHp: 2800, damage: 22, xp: 80 },
+    { time: 600, type: 'orochimaru', name: '傳說三忍・大蛇丸', radius: 30, speed: 82, baseHp: 6500, damage: 28, xp: 150 },
+    { time: 900, type: 'itachi', name: '宇智波鼬', radius: 30, speed: 95, baseHp: 13500, damage: 34, xp: 250 },
+    { time: 1800, type: 'pain', name: '曉之首領・佩恩', radius: 34, speed: 78, baseHp: 36000, damage: 42, xp: 600 }
+];
 
 function generateRoomCode() {
     let code;
@@ -276,6 +312,9 @@ function createPlayerState(id, name, slotIndex, charId = 'naruto') {
             shadowBind: { level: 0, radius: 135, damage: 11, timer: 0, cooldown: 0.85 },
             shadowStitch: { level: 0, spikes: 3, damage: 25, timer: 0, cooldown: 1.55 },
             hiraishin: { level: 0, strikes: 3, damage: 30, timer: 0, cooldown: 1.35 },
+            waterDragon: { level: 0, count: 1, damage: 45, radius: 75, timer: 0, cooldown: 1.65 },
+            deepForest: { level: 0, radius: 165, damage: 18, timer: 0, cooldown: 0.85 },
+            shinsuSenju: { level: 0, fists: 6, damage: 44, timer: 0, cooldown: 1.5 },
             clones: 0,
             cloneTimers: [0.4, 0.8]
         }
@@ -298,7 +337,7 @@ function broadcastLobby(room) {
 
 function startRoomGame(room) {
     room.state = 'PLAYING';
-    room.pausedBy = '';
+    room.pausedBy = null;
     room.gameTime = 0;
     room.teamLevel = 1;
     room.teamXp = 0;
@@ -308,7 +347,10 @@ function startRoomGame(room) {
     room.nextEntityId = 1;
     room.enemies = [];
     room.projectiles = [];
+    room.enemyProjectiles = [];
+    room.hazardZones = [];
     room.gems = [];
+    room.spawnedBosses = new Set();
 
     let idx = 0;
     for (const [id, p] of room.players.entries()) {
@@ -365,7 +407,7 @@ function applyPlayerUpgrade(p, upgradeId) {
             p.weapon.count += (p.charId === 'jiraiya' ? 2 : 1);
             break;
         case 'w_dmg':
-            p.weapon.damage += 14;
+            p.weapon.damage += (p.charId === 'hashirama' ? 22 : p.charId === 'tobirama' ? 18 : 14);
             break;
         case 'w_cd':
             p.weapon.cooldown *= 0.79;
@@ -448,15 +490,40 @@ function applyPlayerUpgrade(p, upgradeId) {
             else {
                 p.skills.hiraishin.level++;
                 p.skills.hiraishin.strikes++;
-                p.skills.hiraishin.damage += 12;
+                p.skills.hiraishin.damage += 14;
+            }
+            break;
+        case 'water_dragon':
+            if (p.skills.waterDragon.level === 0) p.skills.waterDragon.level = 1;
+            else {
+                p.skills.waterDragon.level++;
+                p.skills.waterDragon.count++;
+                p.skills.waterDragon.damage += 20;
+            }
+            break;
+        case 'deep_forest':
+            if (p.skills.deepForest.level === 0) p.skills.deepForest.level = 1;
+            else {
+                p.skills.deepForest.level++;
+                p.skills.deepForest.radius += 28;
+                p.skills.deepForest.damage += 9;
+            }
+            break;
+        case 'shinsu_senju':
+            if (p.skills.shinsuSenju.level === 0) p.skills.shinsuSenju.level = 1;
+            else {
+                p.skills.shinsuSenju.level++;
+                p.skills.shinsuSenju.fists += 2;
+                p.skills.shinsuSenju.damage += 18;
             }
             break;
         case 'clone':
             if (p.skills.clones < 2) p.skills.clones++;
             break;
         case 'hp':
-            p.maxHp += 30;
-            p.hp = Math.min(p.maxHp, p.hp + 65);
+            p.maxHp += (p.charId === 'hashirama' ? 50 : 30);
+            if (p.charId === 'hashirama') p.regen += 1.5;
+            p.hp = Math.min(p.maxHp, p.hp + 80);
             break;
         case 'speed':
             p.speed *= 1.15;
@@ -482,7 +549,7 @@ function damageEnemy(room, enemy, amount, attacker, color = '#fde047', knockback
 
     if (attacker && knockbackForce > 0) {
         const angle = Math.atan2(enemy.y - attacker.y, enemy.x - attacker.x);
-        const kb = enemy.type === 'elite' ? 0.3 : 1.0;
+        const kb = enemy.isBoss ? 0.08 : (enemy.type === 'elite' ? 0.3 : 1.0);
         enemy.kbVx = Math.cos(angle) * knockbackForce * kb;
         enemy.kbVy = Math.sin(angle) * knockbackForce * kb;
     }
@@ -490,17 +557,45 @@ function damageEnemy(room, enemy, amount, attacker, color = '#fde047', knockback
     if (enemy.hp <= 0) {
         room.totalKills++;
         if (attacker) attacker.kills++;
-        room.gems.push({
-            id: room.nextEntityId++,
-            x: enemy.x,
-            y: enemy.y,
-            value: enemy.xpValue
-        });
+        if (enemy.isBoss) {
+            // Boss 擊破掉落大量經驗結晶與全場提示
+            for (let k = 0; k < 10; k++) {
+                const a = (Math.PI * 2 / 10) * k;
+                room.gems.push({
+                    id: room.nextEntityId++,
+                    x: enemy.x + Math.cos(a) * 35,
+                    y: enemy.y + Math.sin(a) * 35,
+                    value: Math.ceil(enemy.xpValue / 10)
+                });
+            }
+            io.to(room.code).emit('bossAlert', `★ 強敵「${enemy.bossName}」已被擊破！ ★`);
+        } else {
+            room.gems.push({
+                id: room.nextEntityId++,
+                x: enemy.x,
+                y: enemy.y,
+                value: enemy.xpValue
+            });
+        }
         io.to(room.code).emit('fx', {
             type: 'poof',
             x: Math.round(enemy.x),
             y: Math.round(enemy.y)
         });
+    }
+}
+
+function hurtPlayer(room, p, dmg) {
+    if (p.hitTimer > 0 || p.downed) return;
+    p.hp = Math.max(0, p.hp - dmg);
+    p.hitTimer = 0.55;
+    io.to(p.id).emit('playerHurt');
+    if (p.hp <= 0) {
+        p.downed = true;
+        p.reviveProgress = 0;
+        if (room.players.size > 1) {
+            io.to(room.code).emit('fx', { type: 'downed', x: Math.round(p.x), y: Math.round(p.y), name: p.name });
+        }
     }
 }
 
@@ -523,28 +618,71 @@ function stepRoom(room, dt) {
             }))
             .sort((a, b) => b.kills - a.kills);
 
+        const entryId = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const mvp = rankedPlayers[0];
-        const teamNames = rankedPlayers.map(p => p.name).join('、');
-        const newEntryId = recordGlobalScore({
-            name: rankedPlayers.length > 1 ? `${mvp.name}小隊 (${teamNames})` : mvp.name,
-            charId: mvp.charId,
-            modeLabel: rankedPlayers.length > 1 ? `${rankedPlayers.length}人合作` : '線上單人',
-            time: room.gameTime,
+        const newEntry = {
+            entryId,
+            name: mvp ? mvp.name : '木葉忍者',
+            charId: mvp ? mvp.charId : 'naruto',
+            teamNames: rankedPlayers.map(p => p.name).join(' / '),
+            modeLabel: rankedPlayers.length > 1 ? `${rankedPlayers.length}人合作` : '單機挑戰',
+            time: Math.floor(room.gameTime),
             level: room.teamLevel,
             kills: room.totalKills
-        });
+        };
+        const updatedGlobal = recordGlobalScore(newEntry);
 
         io.to(room.code).emit('gameOver', {
+            entryId,
             time: room.gameTime,
             level: room.teamLevel,
             totalKills: room.totalKills,
             players: rankedPlayers,
-            globalLeaderboard,
-            newEntryId
+            globalLeaderboard: updatedGlobal
         });
         return;
     }
 
+    // 檢查定時原著強敵 Boss 生成 (5:00 我愛羅 / 10:00 大蛇丸 / 15:00 鼬 / 30:00 佩恩)
+    for (const bCfg of BOSS_SCHEDULE) {
+        if (room.gameTime >= bCfg.time && !room.spawnedBosses.has(bCfg.type)) {
+            room.spawnedBosses.add(bCfg.type);
+            const anchor = alivePlayers[0];
+            const ang = Math.random() * Math.PI * 2;
+            const hpScale = 1 + (players.length - 1) * 0.65;
+            const bossHp = Math.round(bCfg.baseHp * hpScale);
+
+            room.enemies.push({
+                id: room.nextEntityId++,
+                type: bCfg.type,
+                isBoss: true,
+                bossName: bCfg.name,
+                x: anchor.x + Math.cos(ang) * 520,
+                y: anchor.y + Math.sin(ang) * 520,
+                vx: 0,
+                vy: 0,
+                kbVx: 0,
+                kbVy: 0,
+                facing: 'left',
+                hp: bossHp,
+                maxHp: bossHp,
+                speed: bCfg.speed,
+                damage: bCfg.damage,
+                radius: bCfg.radius,
+                xpValue: bCfg.xp,
+                hitTimer: 0,
+                slowTimer: 0,
+                slowFactor: 0.72,
+                skillTimer1: 2.2,
+                skillTimer2: 4.5,
+                skillCycle: 0
+            });
+            io.to(room.code).emit('bossAlert', `⚠️ 強敵來襲：「${bCfg.name}」出現！`);
+            io.to(room.code).emit('sfx', 'rasengan');
+        }
+    }
+
+    // 1. 更新玩家移動與忍術施放
     for (const p of players) {
         if (p.hitTimer > 0) p.hitTimer = Math.max(0, p.hitTimer - dt);
 
@@ -591,6 +729,7 @@ function stepRoom(room, dt) {
             p.vy = 0;
         }
 
+        // 主武器自動發射
         p.weapon.timer -= dt;
         if (p.weapon.timer <= 0 && room.enemies.length > 0) {
             let nearest = null;
@@ -602,12 +741,17 @@ function stepRoom(room, dt) {
                     nearest = e;
                 }
             }
-            if (nearest && minDist < 850) {
+            if (nearest && minDist < 840) {
                 const baseAngle = Math.atan2(nearest.y - p.y, nearest.x - p.x);
                 p.facing = Math.cos(baseAngle) >= 0 ? 'right' : 'left';
                 const cnt = p.weapon.count;
                 const spreadStep = p.charId === 'jiraiya' ? 0.14 : 0.16;
-                const projSpeed = p.charId === 'minato' ? 820 : p.charId === 'sasuke' ? 760 : 690;
+                const projSpeed = p.charId === 'minato' ? 840
+                    : p.charId === 'tobirama' ? 880
+                        : p.charId === 'hashirama' ? 660
+                            : p.charId === 'sasuke' ? 760 : 690;
+                const isPiercing = (p.weapon.type === 'water_sever' || p.weapon.type === 'wood_dragon');
+
                 for (let i = 0; i < cnt; i++) {
                     const angle = baseAngle + (i - (cnt - 1) / 2) * spreadStep;
                     room.projectiles.push({
@@ -620,7 +764,9 @@ function stepRoom(room, dt) {
                         vy: Math.sin(angle) * projSpeed,
                         angle,
                         damage: p.weapon.damage,
-                        radius: 10,
+                        radius: isPiercing ? 16 : 10,
+                        pierce: isPiercing ? 4 : 1,
+                        hitIds: new Set(),
                         life: 1.6
                     });
                 }
@@ -629,6 +775,7 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 鳴人影分身
         if (p.skills.clones > 0 && room.enemies.length > 0) {
             for (let c = 0; c < p.skills.clones; c++) {
                 p.skills.cloneTimers[c] -= dt;
@@ -655,6 +802,8 @@ function stepRoom(room, dt) {
                             angle: ang,
                             damage: Math.ceil(p.weapon.damage * 0.65),
                             radius: 9,
+                            pierce: 1,
+                            hitIds: new Set(),
                             life: 1.5
                         });
                     }
@@ -663,6 +812,7 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 螺旋丸領域
         if (p.skills.rasengan.level > 0) {
             p.skills.rasengan.timer -= dt;
             if (p.skills.rasengan.timer <= 0) {
@@ -680,6 +830,7 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 雷切球 / 佐助千鳥流
         if (p.skills.raikiri.level > 0) {
             const rk = p.skills.raikiri;
             const time = room.gameTime * rk.speed;
@@ -696,12 +847,13 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 卡卡西連鎖紫電
         if (p.skills.lightning.level > 0 && room.enemies.length > 0) {
             p.skills.lightning.timer -= dt;
             if (p.skills.lightning.timer <= 0) {
                 p.skills.lightning.timer = p.skills.lightning.cooldown;
                 const candidates = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 460)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 440)
                     .sort(() => 0.5 - Math.random())
                     .slice(0, p.skills.lightning.bolts);
 
@@ -721,6 +873,7 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 自來也大炎彈
         if (p.skills.fireball.level > 0 && room.enemies.length > 0) {
             p.skills.fireball.timer -= dt;
             if (p.skills.fireball.timer <= 0) {
@@ -730,7 +883,7 @@ function stepRoom(room, dt) {
                     const d = Math.hypot(e.x - p.x, e.y - p.y);
                     if (d < minD) { minD = d; nearest = e; }
                 }
-                if (nearest && minD < 750) {
+                if (nearest && minD < 720) {
                     const ang = Math.atan2(nearest.y - p.y, nearest.x - p.x);
                     room.projectiles.push({
                         id: room.nextEntityId++,
@@ -744,6 +897,8 @@ function stepRoom(room, dt) {
                         damage: p.skills.fireball.damage,
                         blastRadius: p.skills.fireball.radius,
                         radius: 15,
+                        pierce: 1,
+                        hitIds: new Set(),
                         life: 2.0
                     });
                     io.to(room.code).emit('sfx', 'kunai');
@@ -751,12 +906,13 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 佐助天照
         if (p.skills.amaterasu.level > 0 && room.enemies.length > 0) {
             p.skills.amaterasu.timer -= dt;
             if (p.skills.amaterasu.timer <= 0) {
                 p.skills.amaterasu.timer = p.skills.amaterasu.cooldown;
                 const targets = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 460)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 450)
                     .sort(() => 0.5 - Math.random())
                     .slice(0, p.skills.amaterasu.count);
 
@@ -775,6 +931,7 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 小櫻櫻花衝
         if (p.skills.cherrySmash.level > 0) {
             p.skills.cherrySmash.timer -= dt;
             if (p.skills.cherrySmash.timer <= 0) {
@@ -790,6 +947,7 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 小櫻百豪之印
         if (p.skills.byakugou.level > 0) {
             p.skills.byakugou.timer -= dt;
             if (p.skills.byakugou.timer <= 0) {
@@ -813,6 +971,7 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 鹿丸影子模仿術
         if (p.skills.shadowBind.level > 0) {
             p.skills.shadowBind.timer -= dt;
             if (p.skills.shadowBind.timer <= 0) {
@@ -828,12 +987,13 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 鹿丸影子縫合術
         if (p.skills.shadowStitch.level > 0 && room.enemies.length > 0) {
             p.skills.shadowStitch.timer -= dt;
             if (p.skills.shadowStitch.timer <= 0) {
                 p.skills.shadowStitch.timer = p.skills.shadowStitch.cooldown;
                 const targets = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 420)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 400)
                     .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))
                     .slice(0, p.skills.shadowStitch.spikes);
 
@@ -855,36 +1015,118 @@ function stepRoom(room, dt) {
             }
         }
 
+        // 水門 / 扉間 飛雷神斬
         if (p.skills.hiraishin.level > 0 && room.enemies.length > 0) {
             p.skills.hiraishin.timer -= dt;
             if (p.skills.hiraishin.timer <= 0) {
                 p.skills.hiraishin.timer = p.skills.hiraishin.cooldown;
                 const targets = room.enemies
-                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 490)
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 480)
                     .sort(() => 0.5 - Math.random())
                     .slice(0, p.skills.hiraishin.strikes);
 
                 if (targets.length > 0) {
                     io.to(room.code).emit('sfx', 'rasengan');
                     let prevX = p.x, prevY = p.y;
+                    const isTobirama = p.charId === 'tobirama';
                     for (const t of targets) {
                         io.to(room.code).emit('fx', {
-                            type: 'hiraishin',
+                            type: isTobirama ? 'waterSlash' : 'hiraishin',
                             x1: Math.round(prevX),
                             y1: Math.round(prevY),
                             x2: Math.round(t.x),
                             y2: Math.round(t.y)
                         });
-                        damageEnemy(room, t, p.skills.hiraishin.damage, p, '#facc15', 60);
+                        damageEnemy(room, t, p.skills.hiraishin.damage, p, isTobirama ? '#38bdf8' : '#facc15', 60);
                         prevX = t.x;
                         prevY = t.y;
                     }
                 }
             }
         }
+
+        // 扉間：水遁・水龍彈之術
+        if (p.skills.waterDragon.level > 0 && room.enemies.length > 0) {
+            p.skills.waterDragon.timer -= dt;
+            if (p.skills.waterDragon.timer <= 0) {
+                p.skills.waterDragon.timer = p.skills.waterDragon.cooldown;
+                const targets = room.enemies
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 650)
+                    .sort(() => 0.5 - Math.random())
+                    .slice(0, p.skills.waterDragon.count);
+
+                if (targets.length > 0) {
+                    io.to(room.code).emit('sfx', 'rasengan');
+                    for (const t of targets) {
+                        const ang = Math.atan2(t.y - p.y, t.x - p.x);
+                        room.projectiles.push({
+                            id: room.nextEntityId++,
+                            ownerId: p.id,
+                            kind: 'water_dragon_proj',
+                            x: p.x,
+                            y: p.y,
+                            vx: Math.cos(ang) * 520,
+                            vy: Math.sin(ang) * 520,
+                            angle: ang,
+                            damage: p.skills.waterDragon.damage,
+                            blastRadius: p.skills.waterDragon.radius,
+                            radius: 18,
+                            pierce: 1,
+                            hitIds: new Set(),
+                            life: 1.8
+                        });
+                    }
+                }
+            }
+        }
+
+        // 柱間：木遁・樹界降誕（腳下巨樹藤蔓領域）
+        if (p.skills.deepForest.level > 0) {
+            p.skills.deepForest.timer -= dt;
+            if (p.skills.deepForest.timer <= 0) {
+                p.skills.deepForest.timer = p.skills.deepForest.cooldown;
+                const r = p.skills.deepForest.radius;
+                for (const e of room.enemies) {
+                    if (Math.hypot(e.x - p.x, e.y - p.y) <= r + e.radius) {
+                        damageEnemy(room, e, p.skills.deepForest.damage, p, '#4ade80', 25);
+                        e.slowTimer = 1.3;
+                        e.slowFactor = 0.35;
+                    }
+                }
+            }
+        }
+
+        // 柱間：仙法・木遁・真數千手（漫天金色巨拳連轟）
+        if (p.skills.shinsuSenju.level > 0 && room.enemies.length > 0) {
+            p.skills.shinsuSenju.timer -= dt;
+            if (p.skills.shinsuSenju.timer <= 0) {
+                p.skills.shinsuSenju.timer = p.skills.shinsuSenju.cooldown;
+                const targets = room.enemies
+                    .filter(e => Math.hypot(e.x - p.x, e.y - p.y) < 520)
+                    .sort(() => 0.5 - Math.random())
+                    .slice(0, p.skills.shinsuSenju.fists);
+
+                if (targets.length > 0) {
+                    io.to(room.code).emit('sfx', 'rasengan');
+                    for (const t of targets) {
+                        io.to(room.code).emit('fx', {
+                            type: 'buddhaFist',
+                            x: Math.round(t.x),
+                            y: Math.round(t.y),
+                            r: 48
+                        });
+                        for (const e of room.enemies) {
+                            if (Math.hypot(e.x - t.x, e.y - t.y) <= 48 + e.radius) {
+                                damageEnemy(room, e, p.skills.shinsuSenju.damage, p, '#fde047', 140);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    // 生成敵人（距離拉遠至 840~980，支援遠距離視角切換不穿幫）
+    // 2. 普通敵人波次生成
     room.spawnTimer -= dt;
     if (room.spawnTimer <= 0 && room.enemies.length < 150) {
         const playerScale = 1 + (players.length - 1) * 0.55;
@@ -910,6 +1152,7 @@ function stepRoom(room, dt) {
             room.enemies.push({
                 id: room.nextEntityId++,
                 type,
+                isBoss: false,
                 x: anchor.x + Math.cos(angle) * dist,
                 y: anchor.y + Math.sin(angle) * dist,
                 vx: 0,
@@ -931,6 +1174,7 @@ function stepRoom(room, dt) {
         room.spawnTimer = spawnRate;
     }
 
+    // 3. 更新玩家投射物與碰撞
     for (let i = room.projectiles.length - 1; i >= 0; i--) {
         const proj = room.projectiles[i];
         proj.x += proj.vx * dt;
@@ -944,10 +1188,13 @@ function stepRoom(room, dt) {
         const owner = room.players.get(proj.ownerId);
         for (let j = room.enemies.length - 1; j >= 0; j--) {
             const e = room.enemies[j];
+            if (proj.hitIds && proj.hitIds.has(e.id)) continue;
+
             if (Math.hypot(proj.x - e.x, proj.y - e.y) < proj.radius + e.radius) {
-                if (proj.kind === 'fireball') {
+                if (proj.kind === 'fireball' || proj.kind === 'water_dragon_proj') {
+                    const isWater = proj.kind === 'water_dragon_proj';
                     io.to(room.code).emit('fx', {
-                        type: 'explosion',
+                        type: isWater ? 'waterBlast' : 'explosion',
                         x: Math.round(proj.x),
                         y: Math.round(proj.y),
                         r: proj.blastRadius
@@ -955,18 +1202,25 @@ function stepRoom(room, dt) {
                     io.to(room.code).emit('sfx', 'rasengan');
                     for (const target of room.enemies) {
                         if (Math.hypot(target.x - proj.x, target.y - proj.y) <= proj.blastRadius + target.radius) {
-                            damageEnemy(room, target, proj.damage, owner, '#fb923c');
+                            damageEnemy(room, target, proj.damage, owner, isWater ? '#38bdf8' : '#fb923c', isWater ? 200 : 90);
                         }
                     }
+                    room.projectiles.splice(i, 1);
+                    break;
                 } else {
-                    damageEnemy(room, e, proj.damage, owner, '#fde047');
+                    damageEnemy(room, e, proj.damage, owner, proj.kind === 'water_sever' ? '#38bdf8' : proj.kind === 'wood_dragon' ? '#4ade80' : '#fde047');
+                    if (proj.hitIds) proj.hitIds.add(e.id);
+                    proj.pierce = (proj.pierce || 1) - 1;
+                    if (proj.pierce <= 0) {
+                        room.projectiles.splice(i, 1);
+                        break;
+                    }
                 }
-                room.projectiles.splice(i, 1);
-                break;
             }
         }
     }
 
+    // 4. 更新敵人與 Boss 專屬原著技能 AI
     for (let i = room.enemies.length - 1; i >= 0; i--) {
         const e = room.enemies[i];
         if (e.hp <= 0) {
@@ -984,8 +1238,8 @@ function stepRoom(room, dt) {
         }
 
         const spd = e.slowTimer > 0 ? e.speed * (e.slowFactor || 0.48) : e.speed;
-        e.kbVx *= Math.pow(0.88, dt * 30);
-        e.kbVy *= Math.pow(0.88, dt * 30);
+        e.kbVx *= 0.88;
+        e.kbVy *= 0.88;
 
         const angle = Math.atan2(target.y - e.y, target.x - e.x);
         e.facing = Math.cos(angle) >= 0 ? 'right' : 'left';
@@ -994,23 +1248,265 @@ function stepRoom(room, dt) {
         e.x += e.vx * dt;
         e.y += e.vy * dt;
 
-        for (const p of alivePlayers) {
-            if (p.hitTimer > 0 || p.downed) continue;
-            if (Math.hypot(p.x - e.x, p.y - e.y) < p.radius + e.radius - 4) {
-                p.hp = Math.max(0, p.hp - e.damage);
-                p.hitTimer = 0.55;
-                io.to(p.id).emit('playerHurt');
-                if (p.hp <= 0) {
-                    p.downed = true;
-                    p.reviveProgress = 0;
-                    if (players.length > 1) {
-                        io.to(room.code).emit('fx', { type: 'downed', x: Math.round(p.x), y: Math.round(p.y), name: p.name });
+        // Boss 專屬原著忍術循環
+        if (e.isBoss && minD < 950) {
+            e.skillTimer1 -= dt;
+            e.skillTimer2 -= dt;
+
+            if (e.type === 'gaara') {
+                // 我愛羅技能 1：砂手裏劍 5 連射
+                if (e.skillTimer1 <= 0) {
+                    e.skillTimer1 = 2.6;
+                    for (let k = -2; k <= 2; k++) {
+                        const a = angle + k * 0.22;
+                        room.enemyProjectiles.push({
+                            id: room.nextEntityId++,
+                            kind: 'sand_shuriken',
+                            x: e.x,
+                            y: e.y,
+                            vx: Math.cos(a) * 320,
+                            vy: Math.sin(a) * 320,
+                            angle: a,
+                            damage: 18,
+                            radius: 10,
+                            life: 2.8
+                        });
+                    }
+                }
+                // 我愛羅技能 2：砂縛柩・砂瀑送葬（地面預警圈 -> 1.1秒後砂柱爆發）
+                if (e.skillTimer2 <= 0) {
+                    e.skillTimer2 = 4.2;
+                    for (const p of alivePlayers) {
+                        room.hazardZones.push({
+                            id: room.nextEntityId++,
+                            kind: 'sand_coffin',
+                            x: Math.round(p.x),
+                            y: Math.round(p.y),
+                            r: 72,
+                            delay: 1.1,
+                            damage: 28
+                        });
+                    }
+                }
+            } else if (e.type === 'orochimaru') {
+                // 大蛇丸技能 1：潛影多蛇手（7 條毒蛇扇形突襲）
+                if (e.skillTimer1 <= 0) {
+                    e.skillTimer1 = 2.5;
+                    for (let k = -3; k <= 3; k++) {
+                        const a = angle + k * 0.18;
+                        room.enemyProjectiles.push({
+                            id: room.nextEntityId++,
+                            kind: 'snake',
+                            x: e.x,
+                            y: e.y,
+                            vx: Math.cos(a) * 350,
+                            vy: Math.sin(a) * 350,
+                            angle: a,
+                            damage: 22,
+                            radius: 10,
+                            life: 2.8
+                        });
+                    }
+                }
+                // 大蛇丸技能 2：草薙劍・空之太刀 + 召喚部下
+                if (e.skillTimer2 <= 0) {
+                    e.skillTimer2 = 5.0;
+                    room.enemyProjectiles.push({
+                        id: room.nextEntityId++,
+                        kind: 'kusanagi',
+                        x: e.x,
+                        y: e.y,
+                        vx: Math.cos(angle) * 520,
+                        vy: Math.sin(angle) * 520,
+                        angle,
+                        damage: 34,
+                        radius: 16,
+                        life: 2.4
+                    });
+                    for (let s = 0; s < 3; s++) {
+                        const sa = angle + (s - 1) * 1.2;
+                        room.enemies.push({
+                            id: room.nextEntityId++,
+                            type: 'fast',
+                            isBoss: false,
+                            x: e.x + Math.cos(sa) * 55,
+                            y: e.y + Math.sin(sa) * 55,
+                            vx: 0, vy: 0, kbVx: 0, kbVy: 0,
+                            facing: e.facing,
+                            hp: 120, maxHp: 120, speed: 175, damage: 14, radius: 19, xpValue: 5,
+                            hitTimer: 0, slowTimer: 0, slowFactor: 0.48
+                        });
+                    }
+                }
+            } else if (e.type === 'itachi') {
+                // 宇智波鼬技能 1：魔幻・烏鴉分身 10 方向散射
+                if (e.skillTimer1 <= 0) {
+                    e.skillTimer1 = 2.4;
+                    for (let k = 0; k < 10; k++) {
+                        const a = (Math.PI * 2 / 10) * k + room.gameTime;
+                        room.enemyProjectiles.push({
+                            id: room.nextEntityId++,
+                            kind: 'crow',
+                            x: e.x,
+                            y: e.y,
+                            vx: Math.cos(a) * 360,
+                            vy: Math.sin(a) * 360,
+                            angle: a,
+                            damage: 24,
+                            radius: 10,
+                            life: 2.6
+                        });
+                    }
+                }
+                // 宇智波鼬技能 2：天照黑炎陷阱 + 須佐能乎十拳劍氣
+                if (e.skillTimer2 <= 0) {
+                    e.skillTimer2 = 4.2;
+                    for (const p of alivePlayers) {
+                        room.hazardZones.push({
+                            id: room.nextEntityId++,
+                            kind: 'boss_amaterasu',
+                            x: Math.round(p.x + (Math.random() - 0.5) * 60),
+                            y: Math.round(p.y + (Math.random() - 0.5) * 60),
+                            r: 78,
+                            delay: 1.0,
+                            damage: 34
+                        });
+                    }
+                    room.enemyProjectiles.push({
+                        id: room.nextEntityId++,
+                        kind: 'susanoo_wave',
+                        x: e.x,
+                        y: e.y,
+                        vx: Math.cos(angle) * 480,
+                        vy: Math.sin(angle) * 480,
+                        angle,
+                        damage: 38,
+                        radius: 22,
+                        life: 2.4
+                    });
+                }
+            } else if (e.type === 'pain') {
+                // 佩恩（長門）多樣化六道能力循環
+                if (e.skillTimer1 <= 0) {
+                    e.skillTimer1 = 2.2;
+                    // 修羅道：8 方向查克拉導彈齊射
+                    for (let k = 0; k < 8; k++) {
+                        const a = (Math.PI * 2 / 8) * k + e.skillCycle * 0.4;
+                        room.enemyProjectiles.push({
+                            id: room.nextEntityId++,
+                            kind: 'asura_missile',
+                            x: e.x,
+                            y: e.y,
+                            vx: Math.cos(a) * 370,
+                            vy: Math.sin(a) * 370,
+                            angle: a,
+                            damage: 28,
+                            radius: 11,
+                            life: 2.8
+                        });
+                    }
+                }
+                if (e.skillTimer2 <= 0) {
+                    e.skillTimer2 = 4.0;
+                    e.skillCycle = (e.skillCycle + 1) % 3;
+                    if (e.skillCycle === 0) {
+                        // 神羅天征（大範圍斥力震飛）
+                        room.hazardZones.push({
+                            id: room.nextEntityId++,
+                            kind: 'shinra_tensei',
+                            x: Math.round(e.x),
+                            y: Math.round(e.y),
+                            r: 230,
+                            delay: 1.0,
+                            damage: 42
+                        });
+                    } else if (e.skillCycle === 1) {
+                        // 萬象天引（將附近玩家拉向佩恩）
+                        io.to(room.code).emit('fx', { type: 'ring', x: Math.round(e.x), y: Math.round(e.y), r: 360 });
+                        for (const p of alivePlayers) {
+                            const d = Math.hypot(e.x - p.x, e.y - p.y);
+                            if (d > 70 && d < 480) {
+                                const pullAng = Math.atan2(e.y - p.y, e.x - p.x);
+                                p.x += Math.cos(pullAng) * 140;
+                                p.y += Math.sin(pullAng) * 140;
+                            }
+                        }
+                    } else {
+                        // 地爆天星（巨型引力黑球）
+                        room.enemyProjectiles.push({
+                            id: room.nextEntityId++,
+                            kind: 'chibaku',
+                            x: e.x,
+                            y: e.y,
+                            vx: Math.cos(angle) * 230,
+                            vy: Math.sin(angle) * 230,
+                            angle,
+                            damage: 48,
+                            radius: 28,
+                            life: 3.5
+                        });
                     }
                 }
             }
         }
+
+        // 近戰碰撞傷害
+        for (const p of alivePlayers) {
+            if (p.hitTimer > 0 || p.downed) continue;
+            if (Math.hypot(p.x - e.x, p.y - e.y) < p.radius + e.radius - 4) {
+                hurtPlayer(room, p, e.damage);
+            }
+        }
     }
 
+    // 5. 更新 Boss 投射物與地面預警陷阱
+    for (let i = room.enemyProjectiles.length - 1; i >= 0; i--) {
+        const ep = room.enemyProjectiles[i];
+        ep.x += ep.vx * dt;
+        ep.y += ep.vy * dt;
+        ep.life -= dt;
+        if (ep.life <= 0) {
+            room.enemyProjectiles.splice(i, 1);
+            continue;
+        }
+        for (const p of alivePlayers) {
+            if (Math.hypot(p.x - ep.x, p.y - ep.y) < p.radius + ep.radius) {
+                hurtPlayer(room, p, ep.damage);
+                if (ep.kind !== 'kusanagi' && ep.kind !== 'susanoo_wave') {
+                    room.enemyProjectiles.splice(i, 1);
+                }
+                break;
+            }
+        }
+    }
+
+    for (let i = room.hazardZones.length - 1; i >= 0; i--) {
+        const hz = room.hazardZones[i];
+        hz.delay -= dt;
+        if (hz.delay <= 0) {
+            io.to(room.code).emit('fx', {
+                type: hz.kind,
+                x: hz.x,
+                y: hz.y,
+                r: hz.r
+            });
+            io.to(room.code).emit('sfx', 'rasengan');
+            for (const p of alivePlayers) {
+                const d = Math.hypot(p.x - hz.x, p.y - hz.y);
+                if (d <= hz.r + p.radius) {
+                    hurtPlayer(room, p, hz.damage);
+                    if (hz.kind === 'shinra_tensei') {
+                        const pushAng = Math.atan2(p.y - hz.y, p.x - hz.x);
+                        p.x += Math.cos(pushAng) * 180;
+                        p.y += Math.sin(pushAng) * 180;
+                    }
+                }
+            }
+            room.hazardZones.splice(i, 1);
+        }
+    }
+
+    // 6. 更新查克拉經驗寶石
     for (let i = room.gems.length - 1; i >= 0; i--) {
         const g = room.gems[i];
         let collector = null;
@@ -1042,19 +1538,14 @@ function stepRoom(room, dt) {
     }
 }
 
-// 60Hz 高精度物理模擬，30Hz 附帶即時速度向量快照廣播
-let tickCounter = 0;
 setInterval(() => {
-    const dt = 1 / 60;
-    tickCounter++;
-    const shouldBroadcast = (tickCounter % 2 === 0);
-
+    const dt = 1 / 30;
     for (const room of rooms.values()) {
         stepRoom(room, dt);
 
-        if (shouldBroadcast && (room.state === 'PLAYING' || room.state === 'LEVELUP')) {
+        if (room.state === 'PLAYING' || room.state === 'LEVELUP' || room.state === 'PAUSED') {
             io.volatile.to(room.code).emit('state', {
-                t: Number(room.gameTime.toFixed(2)),
+                t: room.gameTime,
                 lv: room.teamLevel,
                 xp: room.teamXp,
                 xpNext: room.teamXpNext,
@@ -1063,8 +1554,8 @@ setInterval(() => {
                     id: p.id,
                     name: p.name,
                     charId: p.charId,
-                    x: Math.round(p.x * 10) / 10,
-                    y: Math.round(p.y * 10) / 10,
+                    x: Math.round(p.x),
+                    y: Math.round(p.y),
                     vx: Math.round(p.vx),
                     vy: Math.round(p.vy),
                     spd: Math.round(p.speed),
@@ -1092,13 +1583,19 @@ setInterval(() => {
                     shadowR: p.skills.shadowBind.radius,
                     stitchLv: p.skills.shadowStitch.level,
                     hiraiLv: p.skills.hiraishin.level,
+                    waterLv: p.skills.waterDragon.level,
+                    forestLv: p.skills.deepForest.level,
+                    forestR: p.skills.deepForest.radius,
+                    senjuLv: p.skills.shinsuSenju.level,
                     clones: p.skills.clones
                 })),
                 enemies: room.enemies.map(e => ({
                     id: e.id,
                     type: e.type,
-                    x: Math.round(e.x * 10) / 10,
-                    y: Math.round(e.y * 10) / 10,
+                    isBoss: !!e.isBoss,
+                    bossName: e.bossName || '',
+                    x: Math.round(e.x),
+                    y: Math.round(e.y),
                     vx: Math.round(e.vx),
                     vy: Math.round(e.vy),
                     facing: e.facing,
@@ -1110,11 +1607,28 @@ setInterval(() => {
                 projectiles: room.projectiles.map(pr => ({
                     id: pr.id,
                     kind: pr.kind,
-                    x: Math.round(pr.x * 10) / 10,
-                    y: Math.round(pr.y * 10) / 10,
+                    x: Math.round(pr.x),
+                    y: Math.round(pr.y),
                     vx: Math.round(pr.vx),
                     vy: Math.round(pr.vy),
                     angle: Number(pr.angle.toFixed(2))
+                })),
+                enemyProjectiles: room.enemyProjectiles.map(ep => ({
+                    id: ep.id,
+                    kind: ep.kind,
+                    x: Math.round(ep.x),
+                    y: Math.round(ep.y),
+                    vx: Math.round(ep.vx),
+                    vy: Math.round(ep.vy),
+                    angle: Number(ep.angle.toFixed(2))
+                })),
+                hazardZones: room.hazardZones.map(hz => ({
+                    id: hz.id,
+                    kind: hz.kind,
+                    x: hz.x,
+                    y: hz.y,
+                    r: hz.r,
+                    delay: Number(hz.delay.toFixed(2))
                 })),
                 gems: room.gems.map(g => ({
                     id: g.id,
@@ -1125,13 +1639,12 @@ setInterval(() => {
             });
         }
     }
-}, 1000 / 60);
+}, 1000 / 30);
 
 io.on('connection', (socket) => {
     let currentRoomCode = null;
 
-    // 連線即主動推送最新全服英雄榜
-    socket.emit('leaderboardData', globalLeaderboard);
+    socket.emit('globalLeaderboardUpdate', globalLeaderboard);
 
     function removePlayerFromRoom() {
         if (!currentRoomCode) return;
@@ -1161,19 +1674,19 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb();
     });
 
-    socket.on('getLeaderboard', () => {
-        socket.emit('leaderboardData', globalLeaderboard);
-    });
-
     socket.on('submitSoloScore', (entry) => {
-        const newEntryId = recordGlobalScore({
-            ...entry,
-            modeLabel: '單機挑戰'
+        if (!entry || typeof entry.time !== 'number') return;
+        const updated = recordGlobalScore({
+            entryId: entry.entryId || `${Date.now()}`,
+            name: String(entry.name || '木葉忍者').slice(0, 12),
+            charId: CHAR_CONFIG[entry.charId] ? entry.charId : 'naruto',
+            teamNames: String(entry.name || '木葉忍者').slice(0, 12),
+            modeLabel: '單機挑戰',
+            time: Math.floor(entry.time),
+            level: Math.max(1, Math.floor(entry.level || 1)),
+            kills: Math.max(0, Math.floor(entry.kills || 0))
         });
-        socket.emit('soloLeaderboardUpdated', {
-            globalLeaderboard,
-            newEntryId
-        });
+        io.emit('globalLeaderboardUpdate', updated);
     });
 
     socket.on('createRoom', ({ name, charId }) => {
@@ -1183,11 +1696,14 @@ io.on('connection', (socket) => {
             code,
             hostId: socket.id,
             state: 'LOBBY',
-            pausedBy: '',
+            pausedBy: null,
             players: new Map(),
             enemies: [],
             projectiles: [],
+            enemyProjectiles: [],
+            hazardZones: [],
             gems: [],
+            spawnedBosses: new Set(),
             gameTime: 0,
             teamLevel: 1,
             teamXp: 0,
@@ -1260,17 +1776,11 @@ io.on('connection', (socket) => {
         if (room.state === 'PLAYING') {
             room.state = 'PAUSED';
             room.pausedBy = p.name;
-            for (const member of room.players.values()) {
-                member.dx = 0;
-                member.dy = 0;
-                member.vx = 0;
-                member.vy = 0;
-            }
-            io.to(room.code).emit('gamePaused', { by: p.name });
+            io.to(room.code).emit('gamePaused', { pausedBy: p.name });
         } else if (room.state === 'PAUSED') {
             room.state = 'PLAYING';
-            room.pausedBy = '';
-            io.to(room.code).emit('resumeGame');
+            room.pausedBy = null;
+            io.to(room.code).emit('gameResumed');
         }
     });
 
