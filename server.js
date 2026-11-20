@@ -5,7 +5,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.get('/', (req, res) => res.send('Naruto Survivors Co-op Server (7th Hokage & Props Edition) Running!'));
+app.get('/', (req, res) => res.send('Naruto Survivors Co-op Server (Terrain & Boss Cap Edition) Running!'));
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
@@ -15,6 +15,79 @@ const GIST_ID = process.env.GIST_ID || '';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const rooms = new Map();
 
+/**
+ * ============================================================================
+ * 【伺服器連線數值設定區】與前端 index.html 同步，可自行修改調整
+ * ============================================================================
+ */
+const SERVER_BALANCE = {
+    maxEnemies: 100,              // 【敵人上限】場上最多同時存在的敵人數量
+    stopSpawnDuringBoss: true,    // 【BOSS 機制】true = BOSS 出現期間暫停生成普通小怪，直到擊敗 BOSS
+    mudSpeedMultiplier: 0.45,     // 【泥地】移動速度倍率（0.45 = 45% 速度）
+    poisonDamagePerSec: 18,       // 【毒氣區】每秒扣除的生命值
+    scrollHealAmount: 35,         // 【書卷：查克拉爆發】立即回復的生命值
+    hokageSageHealRatio: 0.05,    // 【七代火影鳴人】仙術自動回復最大血量的比例（5%）
+    hokageSageHealInterval: 5.0   // 【七代火影鳴人】仙術自動回血間隔（秒）
+};
+
+const CHAR_CONFIG = {
+    naruto:        { name: '漩渦鳴人',           maxHp: 100, speed: 225, regen: 0,   weapon: 'shuriken',        cooldown: 0.95, damage: 15, count: 1, pierce: 1, clones: 0 },
+    naruto_hokage: { name: '漩渦鳴人：七代火影', maxHp: 150, speed: 255, regen: 2.0, weapon: 'rasenshuriken',   cooldown: 0.85, damage: 30, count: 8, pierce: 3, clones: 1 },
+    kakashi:       { name: '旗木卡卡西',         maxHp: 115,  speed: 245, regen: 0,   weapon: 'kunai',           cooldown: 1.05, damage: 25, count: 1, pierce: 1, clones: 0 },
+    jiraiya:       { name: '自來也',             maxHp: 130, speed: 200, regen: 0,   weapon: 'needle',          cooldown: 1.35, damage: 20, count: 3, pierce: 1, clones: 0 },
+    sasuke:        { name: '宇智波佐助',         maxHp: 100, speed: 240, regen: 0,   weapon: 'chidori_senbon',  cooldown: 0.92, damage: 22, count: 1, pierce: 1, clones: 0 },
+    sakura:        { name: '春野櫻',             maxHp: 100, speed: 215, regen: 0.5, weapon: 'cherry_kunai',    cooldown: 1.15, damage: 25, count: 1, pierce: 1, clones: 0 },
+    shikamaru:     { name: '奈良鹿丸',           maxHp: 105, speed: 220, regen: 0,   weapon: 'trench_knife',    cooldown: 1.10, damage: 22, count: 1, pierce: 1, clones: 0 },
+    minato:        { name: '波風水門',           maxHp: 135, speed: 265, regen: 0,   weapon: 'hiraishin_kunai', cooldown: 0.82, damage: 30, count: 2, pierce: 1, clones: 0 },
+    tobirama:      { name: '千手扉間',           maxHp: 145, speed: 250, regen: 1.0, weapon: 'suidanha',        cooldown: 0.85, damage: 32, count: 1, pierce: 4, clones: 0 },
+    hashirama:     { name: '千手柱間',           maxHp: 155, speed: 235, regen: 1.5, weapon: 'wood_root',       cooldown: 0.80, damage: 38, count: 2, pierce: 5, clones: 0 }
+};
+
+/**
+ * ============================================================================
+ * 地圖特殊地質演算法（與前端 index.html 完全一致，確保座標精準對應）
+ * ============================================================================
+ */
+const TERRAIN_SECTOR_SIZE = 720;
+
+function getSectorTerrain(sx, sy) {
+    if (sx === 0 && sy === 0) return null;
+    const h1 = Math.sin(sx * 127.1 + sy * 311.7) * 43758.5453;
+    const r1 = h1 - Math.floor(h1);
+    if (r1 > 0.56) return null;
+    const h2 = Math.sin(sx * 269.5 + sy * 183.3) * 28461.7123;
+    const r2 = h2 - Math.floor(h2);
+    const h3 = Math.sin(sx * 419.2 + sy * 371.9) * 19283.3412;
+    const r3 = h3 - Math.floor(h3);
+    const kind = r1 < 0.31 ? 'mud' : 'poison';
+    const x = sx * TERRAIN_SECTOR_SIZE + 180 + r2 * (TERRAIN_SECTOR_SIZE - 360);
+    const y = sy * TERRAIN_SECTOR_SIZE + 180 + r3 * (TERRAIN_SECTOR_SIZE - 360);
+    const r = kind === 'mud' ? (115 + r2 * 45) : (95 + r3 * 40);
+    return { kind, x, y, r };
+}
+
+function getTerrainStatusAt(x, y) {
+    const csx = Math.floor(x / TERRAIN_SECTOR_SIZE);
+    const csy = Math.floor(y / TERRAIN_SECTOR_SIZE);
+    let inMud = false, inPoison = false;
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const t = getSectorTerrain(csx + dx, csy + dy);
+            if (!t) continue;
+            if (Math.hypot(x - t.x, y - t.y) <= t.r) {
+                if (t.kind === 'mud') inMud = true;
+                else if (t.kind === 'poison') inPoison = true;
+            }
+        }
+    }
+    return { inMud, inPoison };
+}
+
+/**
+ * ============================================================================
+ * 全服排行榜 GitHub Gist 讀寫
+ * ============================================================================
+ */
 let globalLeaderboard = [];
 
 async function fetchGistLeaderboard() {
@@ -50,19 +123,6 @@ async function recordGlobalScore(entry) {
 }
 fetchGistLeaderboard();
 
-const CHAR_CONFIG = {
-    naruto: { name: '漩渦鳴人', maxHp: 110, speed: 225, regen: 0, weapon: 'shuriken', cooldown: 0.95, damage: 20, count: 1, pierce: 1, clones: 0 },
-    naruto_hokage: { name: '漩渦鳴人：七代火影', maxHp: 180, speed: 255, regen: 2.0, weapon: 'rasenshuriken', cooldown: 0.85, damage: 34, count: 8, pierce: 3, clones: 2 },
-    kakashi: { name: '旗木卡卡西', maxHp: 95, speed: 245, regen: 0, weapon: 'kunai', cooldown: 1.05, damage: 28, count: 1, pierce: 1, clones: 0 },
-    jiraiya: { name: '自來也', maxHp: 135, speed: 200, regen: 0, weapon: 'needle', cooldown: 1.35, damage: 16, count: 3, pierce: 1, clones: 0 },
-    sasuke: { name: '宇智波佐助', maxHp: 100, speed: 240, regen: 0, weapon: 'chidori_senbon', cooldown: 0.92, damage: 24, count: 1, pierce: 1, clones: 0 },
-    sakura: { name: '春野櫻', maxHp: 130, speed: 215, regen: 1.5, weapon: 'cherry_kunai', cooldown: 1.15, damage: 30, count: 1, pierce: 1, clones: 0 },
-    shikamaru: { name: '奈良鹿丸', maxHp: 105, speed: 220, regen: 0, weapon: 'trench_knife', cooldown: 1.10, damage: 22, count: 1, pierce: 1, clones: 0 },
-    minato: { name: '波風水門', maxHp: 115, speed: 265, regen: 0, weapon: 'hiraishin_kunai', cooldown: 0.82, damage: 25, count: 2, pierce: 1, clones: 0 },
-    tobirama: { name: '千手扉間', maxHp: 145, speed: 260, regen: 1.0, weapon: 'suidanha', cooldown: 0.85, damage: 32, count: 1, pierce: 4, clones: 0 },
-    hashirama: { name: '千手柱間', maxHp: 190, speed: 245, regen: 3.0, weapon: 'wood_root', cooldown: 0.80, damage: 38, count: 2, pierce: 5, clones: 0 }
-};
-
 const UPGRADE_POOL = {
     naruto: [{ id: 'w_count', title: '多重手裏劍', desc: '手裏劍每次額外投擲 +1 枚' }, { id: 'w_dmg', title: '風遁・查克拉注入', desc: '手裏劍傷害提升 +12' }, { id: 'w_cd', title: '影分身結印加速', desc: '主武器冷卻縮短 20%' }, { id: 'rasengan', title: '螺旋丸領域', desc: '解鎖/擴大周身螺旋丸氣流' }, { id: 'clone', title: '多重影分身之術', desc: '召喚 1 名鳴人分身自動投擲（上限 2 名）' }, { id: 'hp', title: '九尾查克拉恢復', desc: '最大生命 +30 並回復 60 HP' }, { id: 'speed', title: '瞬身疾走', desc: '移動速度提升 15%' }, { id: 'magnet', title: '查克拉吸引', desc: '寶石拾取範圍擴大 50%' }],
     naruto_hokage: [{ id: 'w_count', title: '八方螺旋手裏劍擴散', desc: '每次額外增加 +2 個方向發射螺旋手裏劍' }, { id: 'w_dmg', title: '六道仙術・查克拉增幅', desc: '螺旋手裏劍穿透傷害提升 +20' }, { id: 'w_cd', title: '九喇嘛模式・神速結印', desc: '主武器冷卻縮短 22%' }, { id: 'rasengan', title: '仙法・超大玉螺旋丸', desc: '解鎖/擴大周身金色超大玉螺旋丸領域' }, { id: 'bijuu_bomb', title: '尾獸玉・連彈', desc: '解鎖/增加尾獸玉發射數量，引發大範圍爆破' }, { id: 'clone', title: '多重影分身・七代火影', desc: '召喚 1 名七代火影分身協同作戰（最多 4 個分身）' }, { id: 'hp', title: '九喇嘛仙人查克拉', desc: '最大生命 +50（仙術回血20%同步提升）並回復 100 HP' }, { id: 'speed', title: '六道神速瞬身', desc: '移動速度提升 15%' }],
@@ -88,7 +148,8 @@ function createPlayerState(id, name, slotIndex, charId = 'naruto') {
         x: pos.x, y: pos.y, dx: 0, dy: 0, vx: 0, vy: 0, radius: 20, facing: 'right',
         hp: cfg.maxHp, maxHp: cfg.maxHp, speed: cfg.speed, regen: cfg.regen || 0,
         pickupRange: 130, hitTimer: 0, downed: false, reviveProgress: 0, kills: 0, pendingUpgrade: false,
-        magnetTimer: 0, scrollTimer: 0, scrollType: '', sageHealTimer: 5.0,
+        magnetTimer: 0, scrollTimer: 0, scrollType: '',
+        sageHealTimer: SERVER_BALANCE.hokageSageHealInterval, poisonTick: 0,
         weapon: { type: cfg.weapon, cooldown: cfg.cooldown, timer: 0.3, damage: cfg.damage, count: cfg.count, pierce: cfg.pierce || 1 },
         skills: {
             rasengan: { level: 0, radius: 120, damage: 13, timer: 0, cooldown: 0.9 },
@@ -174,10 +235,15 @@ function applyPlayerUpgrade(p, id) {
     else if (id === 'magnet') p.pickupRange *= 1.5;
 }
 
-function hurtPlayer(room, p, amount, players) {
-    if (!p || p.hitTimer > 0 || p.downed) return;
-    p.hp = Math.max(0, p.hp - amount); p.hitTimer = 0.55; io.to(p.id).emit('playerHurt');
-    if (p.hp <= 0) { p.downed = true; p.reviveProgress = 0; if (players.length > 1) io.to(room.code).emit('fx', { type: 'downed', x: Math.round(p.x), y: Math.round(p.y), name: p.name }); }
+function hurtPlayer(room, p, amount, players, bypassIframes = false) {
+    if (!p || p.downed) return;
+    if (!bypassIframes && p.hitTimer > 0) return;
+    p.hp = Math.max(0, p.hp - amount);
+    if (!bypassIframes) { p.hitTimer = 0.55; io.to(p.id).emit('playerHurt'); }
+    if (p.hp <= 0) {
+        p.downed = true; p.reviveProgress = 0;
+        if (players.length > 1) io.to(room.code).emit('fx', { type: 'downed', x: Math.round(p.x), y: Math.round(p.y), name: p.name });
+    }
 }
 
 function damageEnemy(room, enemy, amount, attacker, color = '#fde047', knockbackForce = 70) {
@@ -224,7 +290,11 @@ function triggerItemPickup(room, p, item) {
         p.scrollTimer = 10.0; const r = Math.random();
         if (r < 0.34) { p.scrollType = 'frenzy'; io.to(room.code).emit('fx', { type: 'buff_text', x: Math.round(p.x), y: Math.round(p.y - 52), text: '📜 秘卷：神速結印 (10秒)！', color: '#facc15' }); }
         else if (r < 0.68) { p.scrollType = 'power'; io.to(room.code).emit('fx', { type: 'buff_text', x: Math.round(p.x), y: Math.round(p.y - 52), text: '📜 秘卷：仙法增幅 (10秒)！', color: '#c084fc' }); }
-        else { p.scrollType = 'chakra'; p.hp = Math.min(p.maxHp, p.hp + 35); io.to(room.code).emit('fx', { type: 'buff_text', x: Math.round(p.x), y: Math.round(p.y - 52), text: '📜 秘卷：查克拉爆發 (+35HP)！', color: '#4ade80' }); }
+        else {
+            const healVal = SERVER_BALANCE.scrollHealAmount;
+            p.scrollType = 'chakra'; p.hp = Math.min(p.maxHp, p.hp + healVal);
+            io.to(room.code).emit('fx', { type: 'buff_text', x: Math.round(p.x), y: Math.round(p.y - 52), text: `📜 秘卷：查克拉爆發 (+${healVal}HP)！`, color: '#4ade80' });
+        }
         io.to(room.code).emit('sfx', 'levelup');
     }
 }
@@ -236,10 +306,10 @@ function checkAndSpawnTimedBosses(room, alivePlayers) {
         room.enemies.push({ id: room.nextEntityId++, type: key, isBoss: true, bossTitle: title, x: anchor.x + Math.cos(ang) * 520, y: anchor.y + Math.sin(ang) * 520, vx: 0, vy: 0, kbVx: 0, kbVy: 0, facing: 'left', hp: Math.round(st.hp * mult), maxHp: Math.round(st.hp * mult), speed: st.speed, damage: st.damage, radius: st.radius, xpValue: st.xp, hitTimer: 0, slowTimer: 0, slowFactor: 0.65, skillTimer1: 2.2, skillTimer2: 4.5, skillTimer3: 7.0, pullTimer: 0 });
         io.to(room.code).emit('bossAlert', { title: `⚠️ 強敵來襲：${title} 登場！`, color: st.alertColor }); io.to(room.code).emit('sfx', 'rasengan');
     };
-    if (room.gameTime >= 300 && !room.bossSpawned.gaara) spawnBoss('gaara', '砂瀑之我愛羅', { hp: 2600, speed: 78, damage: 22, radius: 34, xp: 60, alertColor: '#f59e0b' });
-    if (room.gameTime >= 600 && !room.bossSpawned.orochimaru) spawnBoss('orochimaru', '傳說三忍・大蛇丸', { hp: 5800, speed: 95, damage: 28, radius: 34, xp: 110, alertColor: '#a855f7' });
-    if (room.gameTime >= 900 && !room.bossSpawned.itachi) spawnBoss('itachi', '曉・宇智波鼬', { hp: 9500, speed: 112, damage: 34, radius: 34, xp: 180, alertColor: '#ef4444' });
-    if (room.gameTime >= 1800 && !room.bossSpawned.pain) spawnBoss('pain', '神・佩恩（長門）', { hp: 28000, speed: 92, damage: 42, radius: 38, xp: 400, alertColor: '#c084fc' });
+    if (room.gameTime >= 180 && !room.bossSpawned.gaara) spawnBoss('gaara', '砂瀑之我愛羅', { hp: 9600, speed: 138, damage: 32, radius: 34, xp: 60, alertColor: '#f59e0b' });
+    if (room.gameTime >= 300 && !room.bossSpawned.orochimaru) spawnBoss('orochimaru', '傳說三忍・大蛇丸', { hp: 12800, speed: 155, damage: 38, radius: 34, xp: 110, alertColor: '#a855f7' });
+    if (room.gameTime >= 600 && !room.bossSpawned.itachi) spawnBoss('itachi', '曉・宇智波鼬', { hp: 15500, speed: 182, damage: 34, radius: 34, xp: 180, alertColor: '#ef4444' });
+    if (room.gameTime >= 900 && !room.bossSpawned.pain) spawnBoss('pain', '神・佩恩（長門）', { hp: 18000, speed: 149, damage: 42, radius: 38, xp: 400, alertColor: '#c084fc' });
 }
 
 function updateBossSkills(room, boss, alivePlayers, dt) {
@@ -306,22 +376,38 @@ function stepRoom(room, dt) {
             continue;
         }
 
-        // 七代火影：仙術形態每 5 秒回血 20%
+        // 七代火影：仙術形態定時自動回血 20%
         if (p.charId === 'naruto_hokage') {
             p.sageHealTimer -= dt;
             if (p.sageHealTimer <= 0) {
-                p.sageHealTimer = 5.0;
-                const healAmt = Math.round(p.maxHp * 0.20);
+                p.sageHealTimer = SERVER_BALANCE.hokageSageHealInterval;
+                const healAmt = Math.round(p.maxHp * SERVER_BALANCE.hokageSageHealRatio);
                 p.hp = Math.min(p.maxHp, p.hp + healAmt);
                 io.to(room.code).emit('fx', { type: 'sage_heal', x: Math.round(p.x), y: Math.round(p.y) });
                 io.to(room.code).emit('fx', { type: 'dmg', x: Math.round(p.x), y: Math.round(p.y - 48), val: `+${healAmt}`, color: '#4ade80' });
             }
         }
 
+        // 地圖特殊地質檢測（泥地減速、毒氣持續扣血）
+        const terrain = getTerrainStatusAt(p.x, p.y);
+        if (terrain.inPoison) {
+            p.poisonTick += dt;
+            if (p.poisonTick >= 0.5) {
+                p.poisonTick -= 0.5;
+                const pDmg = Math.max(1, Math.round(SERVER_BALANCE.poisonDamagePerSec * 0.5));
+                io.to(room.code).emit('fx', { type: 'dmg', x: Math.round(p.x), y: Math.round(p.y - 36), val: `-${pDmg}`, color: '#a855f7' });
+                hurtPlayer(room, p, pDmg, players, true);
+                if (p.downed) continue;
+            }
+        } else {
+            p.poisonTick = 0;
+        }
+
         const dmgMult = p.scrollTimer > 0 ? (p.scrollType === 'power' ? 1.5 : 1.3) : 1.0;
         const cdMult = p.scrollTimer > 0 ? (p.scrollType === 'frenzy' ? 0.6 : 0.72) : 1.0;
-        const spdMult = p.scrollTimer > 0 ? (p.scrollType === 'frenzy' ? 1.25 : 1.18) : 1.0;
-        p.effSpeed = p.speed * spdMult;
+        const scrollSpdMult = p.scrollTimer > 0 ? (p.scrollType === 'frenzy' ? 1.25 : 1.18) : 1.0;
+        const terrainSpdMult = terrain.inMud ? SERVER_BALANCE.mudSpeedMultiplier : 1.0;
+        p.effSpeed = p.speed * scrollSpdMult * terrainSpdMult;
 
         if (p.regen > 0 && p.hp < p.maxHp) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
 
@@ -408,10 +494,15 @@ function stepRoom(room, dt) {
         if (p.skills.senpoBuddha.level > 0) { p.skills.senpoBuddha.timer -= dt; if (p.skills.senpoBuddha.timer <= 0) { p.skills.senpoBuddha.timer = p.skills.senpoBuddha.cooldown * cdMult; const r = p.skills.senpoBuddha.radius; io.to(room.code).emit('fx', { type: 'buddha_hands', x: Math.round(p.x), y: Math.round(p.y), r }); io.to(room.code).emit('sfx', 'rasengan'); for (const e of room.enemies) if (Math.hypot(e.x - p.x, e.y - p.y) <= r + e.radius) damageEnemy(room, e, p.skills.senpoBuddha.damage * dmgMult, p, '#fde047', 350); damagePropsInRadius(room, p.x, p.y, r, p.skills.senpoBuddha.damage * dmgMult); } }
     }
 
+    // 敵人生成：上限 100 個，且 BOSS 出現期間暫停生成小怪直至 BOSS 死亡
+    const hasActiveBoss = room.enemies.some(e => e.isBoss && e.hp > 0);
+    const blockSpawnByBoss = SERVER_BALANCE.stopSpawnDuringBoss && hasActiveBoss;
     room.spawnTimer -= dt;
-    if (room.spawnTimer <= 0 && room.enemies.length < 150) {
+    if (!blockSpawnByBoss && room.spawnTimer <= 0 && room.enemies.length < SERVER_BALANCE.maxEnemies) {
         const playerScale = 1 + (players.length - 1) * 0.55, spawnRate = Math.max(0.22, (0.95 - room.gameTime / 280) / playerScale);
-        const spawnCount = Math.max(1, Math.floor((1 + room.gameTime / 45) * (1 + (players.length - 1) * 0.35))), hpMult = (1 + room.gameTime / 110) * (1 + (players.length - 1) * 0.25);
+        const remainSlots = SERVER_BALANCE.maxEnemies - room.enemies.length;
+        const spawnCount = Math.min(remainSlots, Math.max(1, Math.floor((1 + room.gameTime / 45) * (1 + (players.length - 1) * 0.35))));
+        const hpMult = (1 + room.gameTime / 110) * (1 + (players.length - 1) * 0.25);
         for (let i = 0; i < spawnCount; i++) {
             const anchor = alivePlayers[Math.floor(Math.random() * alivePlayers.length)], angle = Math.random() * Math.PI * 2, dist = 840 + Math.random() * 140, rand = Math.random();
             let type = 'basic'; if (room.gameTime > 18 && rand < 0.28) type = 'fast'; if (room.gameTime > 42 && rand > 0.88) type = 'elite';
